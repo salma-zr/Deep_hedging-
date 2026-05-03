@@ -59,125 +59,519 @@ avec perte quadratique.
 
 \section{Cadre mathématique}
 
-\subsection{Marché discret}
+\subsection{Espace probabilisé, filtration et dates de décision}
 
-On considère des dates de couverture
+On travaille en temps discret sur une grille de couverture
 \[
-0=t_0<t_1<\cdots<t_n=T,\qquad \Delta t=T/n.
+0=t_0<t_1<\cdots<t_n=T,\qquad t_k=k\Delta t,\qquad \Delta t=\frac{T}{n}.
 \]
-Sous la probabilité réelle $\mathbb{P}$, le sous-jacent suit une dynamique de
-Black--Scholes discrétisée exactement :
+Le modèle est défini sur un espace probabilisé filtré
 \[
-S_{t_{k+1}}=S_{t_k}\exp\left((\mu-\tfrac12\sigma^2)\Delta t
-+\sigma\sqrt{\Delta t}\,\varepsilon_{k+1}\right),
-\qquad \varepsilon_{k+1}\sim\mathcal{N}(0,1).
+(\Omega,\mathcal{F},(\mathcal{F}_{t_k})_{k=0,\ldots,n},\mathbb{P}),
 \]
-La probabilité réelle $\mathbb{P}$ sert à générer les trajectoires sur
-lesquelles la stratégie est entraînée et évaluée. La probabilité risque-neutre
-$\mathbb{Q}$, sous laquelle la dérive devient $r$, n'est utilisée ici que pour
-calculer la prime Black--Scholes et la stratégie delta de référence. Cette
-séparation est essentielle : l'objectif de couverture statistique porte sur la
-distribution réalisée sous $\mathbb{P}$, pas sur une formule de prix sous
-$\mathbb{Q}$.
+où $\mathcal{F}_{t_k}$ représente toute l'information observable au moment où
+la décision de couverture $\delta_k$ est prise. La mesure $\mathbb{P}$ est la
+probabilité réelle, ou historique : elle décrit la distribution statistique des
+scénarios qui servent à entraîner et à évaluer la couverture. Cette distinction
+est importante car le problème traité ici n'est pas un problème de pricing pur,
+mais un problème de minimisation d'erreur de couverture sous la loi de
+réalisation des marchés.
 
-Le payoff du Put est
+Dans l'implémentation, l'information disponible à $t_k$ est résumée par des
+variables d'état observables :
 \[
-Z=(K-S_T)^+.
+I_k=\left(S_{t_k},\, t_k,\, K,\, T,\, \delta_{k-1}\right),
 \]
-On adopte la convention du vendeur : il reçoit une prime connue $p_0$, paie le
-payoff $Z$ à maturité et peut trader le sous-jacent.
-
-\subsection{Stratégie de hedging}
-
-Une stratégie de couverture est un processus prévisible
+ou, après normalisation numérique,
 \[
-\delta=(\delta_0,\ldots,\delta_{n-1}),
+X_k=\left(\frac{S_{t_k}}{S_0}-1,\,
+\log\frac{S_{t_k}}{K},\,
+\frac{T-t_k}{T},\,
+\delta_{k-1}\right).
 \]
-où $\delta_k$ représente le nombre d'actions détenues sur l'intervalle
-$[t_k,t_{k+1}]$. La prévisibilité signifie que $\delta_k$ ne dépend que de
-l'information disponible à $t_k$ : prix courant, temps restant, moneyness et
-position précédente dans notre implémentation.
+Le choix de $X_k$ est cohérent avec un Put européen dans un modèle markovien :
+le prix courant, la moneyness et le temps restant suffisent à représenter l'état
+de marché pertinent, tandis que $\delta_{k-1}$ est nécessaire dès que l'on
+introduit des coûts de transaction ou des contraintes de turnover.
 
-Sans coût de transaction, le gain cumulé est
+\subsection{Dynamique du sous-jacent sous la probabilité réelle}
+
+Le sous-jacent $S$ est simulé sous $\mathbb{P}$ par un modèle de Black--Scholes
+discrétisé exactement. Pour $k=0,\ldots,n-1$,
 \[
-(\delta\cdot S)_T=\sum_{k=0}^{n-1}\delta_k(S_{t_{k+1}}-S_{t_k}).
+S_{t_{k+1}}
+=S_{t_k}\exp\left[
+\left(\mu-\frac12\sigma^2\right)\Delta t
++\sigma\sqrt{\Delta t}\,\varepsilon_{k+1}
+\right],
 \]
-Avec coûts proportionnels de taux $\lambda$, nous utilisons
+avec
 \[
-C_T(\delta)=\lambda\sum_{k=0}^{n}S_{t_k}|\delta_k-\delta_{k-1}|,
-\qquad \delta_{-1}=\delta_n=0,
+\varepsilon_{1},\ldots,\varepsilon_n
+\stackrel{i.i.d.}{\sim}\mathcal{N}(0,1)
+\quad\text{sous }\mathbb{P}.
 \]
-ce qui inclut l'ouverture, les rééquilibrages et la liquidation finale.
-
-Le P\&L terminal du vendeur couvert est donc
+Ainsi
 \[
-\Pi_T(\delta)=-Z+p_0+(\delta\cdot S)_T-C_T(\delta).
+\log\frac{S_{t_{k+1}}}{S_{t_k}}
+\sim
+\mathcal{N}\left(
+\left(\mu-\frac12\sigma^2\right)\Delta t,\,
+\sigma^2\Delta t
+\right).
 \]
+Le paramètre $\mu$ est la dérive réelle utilisée pour la génération de scénarios.
+Il n'intervient pas dans le prix Black--Scholes de référence, mais il influence
+la distribution des erreurs de couverture hors-échantillon lorsque l'objectif
+est évalué sous $\mathbb{P}$.
 
-\subsection{Objectif quadratique}
+\subsection{Mesure risque-neutre et rôle limité du pricing}
 
-La prime étant donnée, l'objectif retenu est
+Pour fixer une prime de référence et construire le benchmark de delta hedging,
+on introduit séparément une mesure risque-neutre $\mathbb{Q}$ sous laquelle le
+processus actualisé est martingale. Dans le cas Black--Scholes avec taux sans
+risque constant $r$,
 \[
-\min_{\delta\in\mathcal{H}}
-\mathbb{E}_{\mathbb{P}}\left[\ell(\Pi_T(\delta))\right],
+S_{t_{k+1}}
+=S_{t_k}\exp\left[
+\left(r-\frac12\sigma^2\right)\Delta t
++\sigma\sqrt{\Delta t}\,\varepsilon^{\mathbb{Q}}_{k+1}
+\right],
 \qquad
+\varepsilon^{\mathbb{Q}}_{k+1}\sim\mathcal{N}(0,1).
+\]
+La prime connue $p_0$ peut être imposée extérieurement. Par défaut, elle est
+prise égale au prix risque-neutre Black--Scholes du Put :
+\[
+p_0=P_{\mathrm{BS}}(S_0,K,T,r,\sigma)
+=Ke^{-rT}N(-d_2)-S_0N(-d_1),
+\]
+où
+\[
+d_1=\frac{\log(S_0/K)+(r+\frac12\sigma^2)T}{\sigma\sqrt{T}},
+\qquad
+d_2=d_1-\sigma\sqrt{T}.
+\]
+Le delta du Put utilisé comme benchmark est
+\[
+\Delta_{\mathrm{put}}(t,S_t)
+=\frac{\partial P_{\mathrm{BS}}}{\partial S}(t,S_t)
+=N(d_1(t,S_t))-1,
+\]
+avec
+\[
+d_1(t,S)
+=\frac{\log(S/K)+(r+\frac12\sigma^2)(T-t)}
+{\sigma\sqrt{T-t}}.
+\]
+Cette partie relève de $\mathbb{Q}$. En revanche, l'entraînement Deep Hedging
+minimise une espérance sous $\mathbb{P}$. La méthode ne suppose donc pas que
+la stratégie optimale soit la delta Black--Scholes ; cette dernière est seulement
+un point de comparaison naturel en marché complet sans frictions et en temps
+continu.
+
+\subsection{Payoff, convention vendeur et stratégie admissible}
+
+Le produit couvert est un Put européen de strike $K$ et de maturité $T$ :
+\[
+Z=g(S_T)=(K-S_T)^+.
+\]
+On adopte la convention du vendeur de l'option : à la date initiale, il reçoit
+la prime connue $p_0$ ; à maturité, il verse $Z$ ; entre les deux, il peut
+échanger le sous-jacent. Une stratégie de couverture est un processus
+\[
+\delta=(\delta_0,\ldots,\delta_{n-1})
+\]
+tel que $\delta_k$ désigne le nombre d'unités du sous-jacent détenues sur
+l'intervalle $[t_k,t_{k+1})$. La contrainte fondamentale est la prévisibilité :
+\[
+\delta_k\ \text{est}\ \mathcal{F}_{t_k}\text{-mesurable}.
+\]
+Autrement dit, $\delta_k$ ne peut pas dépendre de $S_{t_{k+1}}$ ni d'aucune
+information future. L'ensemble des stratégies admissibles est noté
+$\mathcal{H}$. Dans la version de base, $\mathcal{H}$ contient les stratégies
+prévisibles bornées générées par les réseaux, la borne provenant de la sortie
+en $\tanh$. Cette borne joue le rôle d'une contrainte de levier numérique :
+\[
+|\delta_k|\leq \bar{\delta}.
+\]
+
+\subsection{Autofinancement, gain de trading et coûts}
+
+En absence de frictions, le gain cumulé d'une stratégie prévisible est
+l'intégrale stochastique discrète
+\[
+(\delta\cdot S)_T
+=\sum_{k=0}^{n-1}\delta_k\left(S_{t_{k+1}}-S_{t_k}\right).
+\]
+Cette écriture encode l'autofinancement : les rééquilibrages intermédiaires
+sont financés par le portefeuille lui-même, et seul le P\&L terminal est évalué.
+
+Pour l'extension avec frictions, on retient un coût proportionnel au montant
+notionnel échangé. En posant
+\[
+\delta_{-1}=0,\qquad \delta_n=0,
+\]
+ce qui signifie absence de position avant l'ouverture et liquidation finale à
+maturité, le coût total est
+\[
+C_T(\delta)
+=\lambda\sum_{k=0}^{n}S_{t_k}\left|\delta_k-\delta_{k-1}\right|.
+\]
+Le terme $k=0$ correspond à l'ouverture de la position, les termes
+$1,\ldots,n-1$ aux rééquilibrages, et le terme $k=n$ à la liquidation. Dans
+le cas principal sans coûts, $\lambda=0$ et donc $C_T(\delta)=0$.
+
+\subsection{P\&L terminal et erreur de couverture}
+
+Le P\&L terminal du vendeur couvert est
+\[
+\Pi_T(\delta)
+=-Z+p_0+(\delta\cdot S)_T-C_T(\delta).
+\]
+Une couverture parfaite en temps discret satisferait $\Pi_T(\delta)=0$ presque
+sûrement. En pratique, cette égalité n'est pas atteinte pour trois raisons :
+\begin{itemize}
+\item les dates de couverture sont discrètes ;
+\item la stratégie est restreinte à une famille paramétrique ;
+\item les coûts de transaction ou contraintes de position rendent le marché
+effectivement incomplet.
+\end{itemize}
+L'erreur de couverture est donc identifiée au P\&L résiduel $\Pi_T$. Un P\&L
+positif signifie que le vendeur termine avec un excédent après paiement du Put ;
+un P\&L négatif signifie une perte résiduelle.
+
+\subsection{Objectif quadratique avec prime connue}
+
+La prime $p_0$ n'est pas optimisée : elle est considérée comme donnée par le
+marché ou par une convention de pricing. Le problème est alors celui de la
+meilleure stratégie de réduction du risque résiduel :
+\[
+\delta^\star
+\in
+\operatorname*{arg\,min}_{\delta\in\mathcal{H}}
+J(\delta),
+\qquad
+J(\delta)
+=
+\mathbb{E}_{\mathbb{P}}
+\left[
+\ell\left(\Pi_T(\delta)\right)
+\right],
+\]
+avec la perte quadratique
+\[
 \ell(x)=x^2.
 \]
-Minimiser $\mathbb{E}[\Pi_T^2]$ pénalise symétriquement gains et pertes
-résiduels : l'objectif vise une réplication statistique autour de zéro plutôt
-qu'une préférence unilatérale de type shortfall. Cette convention est cohérente
-avec une analyse d'erreur de couverture, mais elle ne remplace pas une mesure
-de risque prudentielle pour un desk réel.
+Explicitement,
+\[
+J(\delta)
+=
+\mathbb{E}_{\mathbb{P}}
+\left[
+\left(
+-(K-S_T)^+
++p_0
++\sum_{k=0}^{n-1}\delta_k(S_{t_{k+1}}-S_{t_k})
+-C_T(\delta)
+\right)^2
+\right].
+\]
+Cette fonction objectif correspond à une erreur quadratique moyenne de
+réplication. Elle pénalise symétriquement pertes et gains résiduels : l'objectif
+est de centrer et concentrer la distribution du P\&L autour de zéro, non de
+maximiser le gain espéré du vendeur. Cette propriété est adaptée à une étude
+académique de qualité de couverture. Elle diffère d'une mesure prudentielle
+asymétrique, telle que la CVaR, qui pénalise spécifiquement la queue gauche du
+P\&L.
+
+Lorsque $\lambda=0$ et que le modèle Black--Scholes est utilisé en temps
+continu avec trading continu, la couverture delta réplique l'option. Ici, même
+avec le même modèle de diffusion, le passage au temps discret laisse une erreur
+de discrétisation. Le Deep Hedging apprend directement la stratégie qui réduit
+cette erreur sous la loi simulée et sous les contraintes numériques choisies.
 
 \section{Méthodologie Deep Hedging}
 
-\subsection{Lien avec l'article}
+\subsection{Point de départ dans l'article de Buehler et al.}
 
-Buehler et al. formulent le Deep Hedging comme l'optimisation de stratégies
-adaptées dans un marché discret, éventuellement avec frictions. Leur P\&L
-terminal prend la forme $-Z+p_0+(\delta\cdot S)_T-C_T(\delta)$. Dans le cas où
-$p_0$ est exogène, ils proposent de minimiser
+Buehler, Gonon, Teichmann et Wood formulent le Deep Hedging comme un problème
+d'optimisation de stratégies adaptées dans un marché discret avec frictions
+éventuelles. Leur cadre général considère une position terminale
 \[
-\inf_{\delta\in\mathcal{H}}\mathbb{E}\left[
-\ell\left(-Z+p_0+(\delta\cdot S)_T-C_T(\delta)\right)\right].
+-Z+p_0+(\delta\cdot S)_T-C_T(\delta)
 \]
-C'est exactement la formulation retenue, avec $\ell(x)=x^2$ en expérience
-principale.
+et remplace la recherche analytique d'une couverture par l'optimisation
+numérique d'une stratégie paramétrée. Deux idées de l'article sont reprises ici.
 
-\subsection{Contrôle stochastique paramétré}
+Premièrement, la stratégie est vue comme un contrôle prévisible : à chaque date,
+une fonction de décision transforme l'information disponible en position de
+portefeuille. Deuxièmement, l'objectif est évalué directement sur la distribution
+des scénarios simulés, ce qui permet de traiter les frictions sans dériver de
+PDE ou de formule fermée.
 
-Le problème peut être vu comme un contrôle stochastique discret. A chaque date
-$t_k$, le contrôleur observe un état
+Le point exact utilisé pour ce projet est le cas à prime exogène. Si $p_0$ est
+donné, l'article conduit à l'optimisation
 \[
-X_k=\left(S_{t_k}/S_0-1,\ \log(S_{t_k}/K),\ (T-t_k)/T,\ \delta_{k-1}\right),
+\inf_{\delta\in\mathcal{H}}
+\mathbb{E}_{\mathbb{P}}
+\left[
+\ell\left(
+-Z+p_0+(\delta\cdot S)_T-C_T(\delta)
+\right)
+\right].
 \]
-et choisit une action $\delta_k=f_\theta(X_k)$. Les paramètres $\theta$ sont
-ceux d'un réseau de neurones. La stratégie est semi-récurrente car la position
-précédente entre explicitement dans l'état ; pour le LSTM, l'historique des
-features de marché est également résumé par un état caché.
-
-La fonction de coût empirique sur un mini-batch de $M$ trajectoires est
+Dans notre étude,
 \[
-\widehat{J}(\theta)=\frac1M\sum_{m=1}^{M}
-\left[-Z^{(m)}+p_0+
-\sum_{k=0}^{n-1}\delta^\theta_k(S^{(m)}_{t_{k+1}}-S^{(m)}_{t_k})
--C_T(\delta^\theta)^{(m)}\right]^2.
+\ell(x)=x^2,
 \]
-Toutes les opérations étant différentiables, PyTorch calcule
-$\nabla_\theta\widehat{J}$ par backpropagation à travers les trajectoires
-simulées et les dates de rebalancement.
+ce qui transforme le Deep Hedging en minimisation directe de la MSE de
+couverture. La partie prix d'indifférence de l'article n'est donc pas l'objet
+principal : on ne cherche pas $p_0$, on cherche $\delta^\star$ conditionnellement
+à $p_0$.
 
-\subsection{Architectures}
+\subsection{Formulation comme contrôle stochastique discret}
 
-Trois architectures sont comparées :
+Le problème peut se lire comme un problème de contrôle stochastique à horizon
+fini. L'état contrôlé est constitué du marché observable et de la position
+précédente :
+\[
+X_k=\Phi(S_{t_k},t_k,K,T,\delta_{k-1}),
+\]
+où $\Phi$ désigne la normalisation utilisée numériquement. L'action choisie à
+la date $t_k$ est
+\[
+a_k=\delta_k.
+\]
+La dynamique contrôlée du portefeuille ne modifie pas la dynamique de $S$ dans
+la version de base, car on ne modélise pas d'impact de marché. Le contrôle
+agit seulement sur le gain de trading et sur les coûts :
+\[
+W_{k+1}
+=W_k+\delta_k(S_{t_{k+1}}-S_{t_k})
+-c_k(\delta_k-\delta_{k-1}),
+\]
+avec $W_0=p_0$ et, à maturité,
+\[
+\Pi_T=W_T-Z-c_n(0-\delta_{n-1}).
+\]
+Pour le coût proportionnel,
+\[
+c_k(u)=\lambda S_{t_k}|u|.
+\]
+En absence de coûts, $c_k\equiv 0$.
+
+Une formulation dynamique exacte ferait intervenir des fonctions valeur
+\[
+V_k(x,w,\delta_{k-1})
+=
+\inf_{\delta_k,\ldots,\delta_{n-1}}
+\mathbb{E}_{\mathbb{P}}
+\left[
+\Pi_T^2
+\mid X_k=x,\ W_k=w,\ \delta_{k-1}
+\right].
+\]
+Cependant, même dans un modèle simple, cette récursion devient coûteuse dès
+que l'état est enrichi ou que des frictions sont ajoutées. Le Deep Hedging évite
+de résoudre explicitement cette programmation dynamique : il optimise
+directement une politique globale paramétrée sur des trajectoires Monte Carlo.
+
+\subsection{Paramétrisation neuronale des stratégies}
+
+La stratégie admissible est restreinte à une famille paramétrique
+\[
+\mathcal{H}_{\Theta}
+=
+\left\{
+\delta^\theta:\theta\in\Theta
+\right\}
+\subset\mathcal{H}.
+\]
+Pour un MLP partagé entre les dates, la décision prend la forme
+\[
+\delta_k^\theta
+=
+\bar{\delta}\,
+\tanh\left(F_\theta(X_k)\right),
+\]
+où $F_\theta$ est un réseau feed-forward et $\bar{\delta}>0$ borne la position.
+L'usage du même réseau à toutes les dates impose une forme de régularisation :
+le temps restant est fourni en entrée, ce qui permet au réseau d'apprendre une
+politique dépendante de $k$ sans multiplier les paramètres par le nombre de
+dates.
+
+Pour un réseau à $L$ couches, une écriture typique est
+\[
+h_0=X_k,\qquad
+h_{\ell}=\rho(A_{\ell}h_{\ell-1}+b_{\ell}),
+\quad \ell=1,\ldots,L-1,
+\]
+\[
+F_\theta(X_k)=A_Lh_{L-1}+b_L,
+\]
+avec activation ReLU $\rho(x)=\max(x,0)$ dans l'implémentation. Les paramètres
+sont
+\[
+\theta=\{A_\ell,b_\ell\}_{\ell=1,\ldots,L}.
+\]
+Le MLP simple possède une faible capacité et sert de référence neuronale. Le
+MLP profond augmente le nombre de couches et la dimension cachée pour mieux
+approximer une fonction de couverture non linéaire en spot, moneyness et temps.
+
+Pour le LSTM, on fournit la séquence
+\[
+(Y_0,\ldots,Y_k),
+\qquad
+Y_j=\left(\frac{S_{t_j}}{S_0}-1,\log\frac{S_{t_j}}{K},\frac{T-t_j}{T}\right),
+\]
+à un état récurrent
+\[
+H_k=\mathrm{LSTM}_\theta(Y_0,\ldots,Y_k).
+\]
+La position est ensuite produite par une tête feed-forward utilisant $H_k$ et
+$\delta_{k-1}$ :
+\[
+\delta_k^\theta
+=
+\bar{\delta}\,
+\tanh\left(G_\theta(H_k,\delta_{k-1})\right).
+\]
+Dans un Black--Scholes markovien, le LSTM n'est pas théoriquement nécessaire ;
+son intérêt est expérimental : tester si une mémoire séquentielle stabilise
+l'apprentissage ou capte des effets de chemin lorsque l'on enrichit le modèle.
+
+\subsection{Objectif empirique Monte Carlo}
+
+L'espérance $J(\theta)$ n'est pas calculée analytiquement. On génère
+$M$ trajectoires indépendantes
+\[
+\left(S^{(m)}_{t_0},\ldots,S^{(m)}_{t_n}\right),
+\qquad m=1,\ldots,M,
+\]
+et l'on remplace $J$ par l'estimateur empirique
+\[
+\widehat{J}_M(\theta)
+=
+\frac1M
+\sum_{m=1}^{M}
+\left[
+\Pi_T^{(m)}(\theta)
+\right]^2,
+\]
+où
+\[
+\Pi_T^{(m)}(\theta)
+=
+-\left(K-S_T^{(m)}\right)^+
++p_0
++\sum_{k=0}^{n-1}
+\delta_k^\theta\!\left(X_k^{(m)}\right)
+\left(S_{t_{k+1}}^{(m)}-S_{t_k}^{(m)}\right)
+-C_T^{(m)}(\delta^\theta).
+\]
+En pratique, l'optimisation utilise des mini-batches $B\subset\{1,\ldots,M\}$ :
+\[
+\widehat{J}_B(\theta)
+=
+\frac1{|B|}
+\sum_{m\in B}
+\left[
+\Pi_T^{(m)}(\theta)
+\right]^2.
+\]
+Cette approximation introduit un bruit de gradient, mais elle rend
+l'optimisation scalable et joue un rôle régularisant usuel en apprentissage
+profond.
+
+\subsection{Backpropagation à travers les trajectoires}
+
+Pour une trajectoire donnée, le P\&L est une composition de fonctions
+différentiables des paramètres $\theta$ :
+\[
+\theta
+\mapsto
+\delta_0^\theta,\ldots,\delta_{n-1}^\theta
+\mapsto
+\Pi_T(\theta)
+\mapsto
+\Pi_T(\theta)^2.
+\]
+Le gradient empirique s'écrit formellement
+\[
+\nabla_\theta \widehat{J}_B(\theta)
+=
+\frac{2}{|B|}
+\sum_{m\in B}
+\Pi_T^{(m)}(\theta)
+\nabla_\theta \Pi_T^{(m)}(\theta).
+\]
+Sans coûts de transaction,
+\[
+\nabla_\theta \Pi_T^{(m)}(\theta)
+=
+\sum_{k=0}^{n-1}
+\left(S_{t_{k+1}}^{(m)}-S_{t_k}^{(m)}\right)
+\nabla_\theta \delta_k^\theta(X_k^{(m)}).
+\]
+Avec coûts proportionnels, des termes supplémentaires apparaissent :
+\[
+-\lambda
+\sum_{k=0}^{n}
+S_{t_k}^{(m)}
+\nabla_\theta
+\left|
+\delta_k^\theta-\delta_{k-1}^\theta
+\right|.
+\]
+La valeur absolue n'est pas différentiable en zéro, mais les bibliothèques
+d'autodifférentiation utilisent un sous-gradient, ce qui est suffisant pour
+l'optimisation numérique. PyTorch construit automatiquement le graphe de calcul
+sur toutes les dates de couverture et applique la règle de la chaîne.
+
+La mise à jour des paramètres est effectuée par Adam :
+\[
+\theta_{j+1}
+=
+\theta_j-\eta_j\,\widehat{m}_j/(\sqrt{\widehat{v}_j}+\epsilon),
+\]
+où $\widehat{m}_j$ et $\widehat{v}_j$ sont les moments adaptatifs du gradient.
+Un clipping de gradient est ajouté pour éviter des mises à jour extrêmes au
+début de l'entraînement.
+
+\subsection{Lien avec le delta hedging classique}
+
+Le delta hedging Black--Scholes correspond à la stratégie analytique
+\[
+\delta_k^{\mathrm{BS}}
+=
+\Delta_{\mathrm{put}}(t_k,S_{t_k}).
+\]
+En marché complet, sans coûts et avec couverture continue, cette stratégie
+réplique le Put. En temps discret, elle devient un benchmark non parfait :
+\[
+\Pi_T(\delta^{\mathrm{BS}})
+\neq 0
+\quad\text{en général}.
+\]
+Le Deep Hedging ne cherche pas à apprendre la formule du delta pour elle-même ;
+il minimise l'erreur quadratique terminale dans le dispositif discret réellement
+utilisé. Il peut donc, en principe, s'écarter du delta si cela réduit la MSE
+sous $\mathbb{P}$, avec coûts, contraintes ou architecture donnée.
+
+\subsection{Architectures comparées}
+
+Trois familles de politiques sont comparées expérimentalement :
 \begin{itemize}
-\item \textbf{MLP simple} : une couche cachée, faible capacité, utile comme
-baseline neuronale.
-\item \textbf{MLP profond} : trois couches, capacité plus élevée pour approximer
-des dépendances non linéaires en spot et temps.
-\item \textbf{LSTM} : réseau récurrent traitant la séquence de features. Dans un
-modèle strictement markovien il n'est pas théoriquement nécessaire, mais il
-teste si une mémoire séquentielle améliore la stabilité.
+\item \textbf{MLP simple} : une couche cachée. Il permet de tester si une faible
+capacité suffit à approximer une couverture proche du delta dans un cadre
+markovien simple.
+\item \textbf{MLP profond} : plusieurs couches cachées. Il augmente la capacité
+d'approximation et doit mieux représenter les non-linéarités liées à la
+moneyness, au temps restant et aux coûts.
+\item \textbf{LSTM} : politique récurrente. Elle est surtout utile lorsque le
+modèle ou les features ne sont plus strictement markoviens ; dans le cas
+Black--Scholes, elle sert de test de robustesse architectural.
 \end{itemize}
 
 \section{Implémentation}
