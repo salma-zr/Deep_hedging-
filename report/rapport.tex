@@ -1,0 +1,296 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\geometry{margin=2.4cm}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+\title{Deep Hedging d'un Put européen avec perte quadratique et prime connue}
+\author{Projet académique de niveau master/ingénieur}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Ce rapport étudie la couverture d'un Put européen par Deep Hedging dans un
+marché discrétisé. La prime est supposée connue et l'objectif est de minimiser
+une perte quadratique du P\&L terminal, conformément à la formulation à prime
+exogène de Buehler, Gonon, Teichmann et Wood. Les stratégies sont paramétrées
+par réseaux de neurones et entraînées par rétropropagation à travers des
+trajectoires Monte Carlo. Les performances sont comparées à un delta hedging
+Black--Scholes et analysées selon l'architecture, les paramètres de marché et
+la présence de coûts proportionnels.
+\end{abstract}
+
+\section{Introduction}
+
+Le sujet imposé est le suivant : implémenter un algorithme de Deep Hedging
+inspiré de l'article fourni pour couvrir un Put, en supposant une loss
+quadratique et une prime connue, puis analyser la qualité des résultats en
+fonction de l'architecture du réseau. Le livrable doit être un dépôt Python
+reproductible contenant code modulaire, notebook exécutable, rapport et
+figures.
+
+L'article de Buehler et al. propose de remplacer la recherche analytique d'une
+stratégie de couverture par un problème d'optimisation statistique sur des
+stratégies paramétrées. Son point important pour ce projet est la distinction
+entre deux usages : l'indifference pricing sous mesures de risque convexes et
+le cas, explicitement mentionné dans leur remarque 3.4, où la prime $p_0$ est
+donnée par le marché. Nous retenons ce second cadre : la prime n'est pas
+optimisée, et la stratégie de hedge minimise directement une perte terminale.
+
+Le choix d'un Put européen est volontairement simple : il permet de disposer
+d'un benchmark Black--Scholes clair, tout en conservant les enjeux de couverture
+discrète, de simulation sous probabilité réelle et de comparaison
+hors-échantillon. Le projet ne cherche pas à paraphraser l'article ; il adapte
+sa structure de contrôle stochastique au cas pédagogique d'une option vanille
+avec perte quadratique.
+
+\section{Cadre mathématique}
+
+\subsection{Marché discret}
+
+On considère des dates de couverture
+\[
+0=t_0<t_1<\cdots<t_n=T,\qquad \Delta t=T/n.
+\]
+Sous la probabilité réelle $\mathbb{P}$, le sous-jacent suit une dynamique de
+Black--Scholes discrétisée exactement :
+\[
+S_{t_{k+1}}=S_{t_k}\exp\left((\mu-\tfrac12\sigma^2)\Delta t
++\sigma\sqrt{\Delta t}\,\varepsilon_{k+1}\right),
+\qquad \varepsilon_{k+1}\sim\mathcal{N}(0,1).
+\]
+La probabilité réelle $\mathbb{P}$ sert à générer les trajectoires sur
+lesquelles la stratégie est entraînée et évaluée. La probabilité risque-neutre
+$\mathbb{Q}$, sous laquelle la dérive devient $r$, n'est utilisée ici que pour
+calculer la prime Black--Scholes et la stratégie delta de référence. Cette
+séparation est essentielle : l'objectif de couverture statistique porte sur la
+distribution réalisée sous $\mathbb{P}$, pas sur une formule de prix sous
+$\mathbb{Q}$.
+
+Le payoff du Put est
+\[
+Z=(K-S_T)^+.
+\]
+On adopte la convention du vendeur : il reçoit une prime connue $p_0$, paie le
+payoff $Z$ à maturité et peut trader le sous-jacent.
+
+\subsection{Stratégie de hedging}
+
+Une stratégie de couverture est un processus prévisible
+\[
+\delta=(\delta_0,\ldots,\delta_{n-1}),
+\]
+où $\delta_k$ représente le nombre d'actions détenues sur l'intervalle
+$[t_k,t_{k+1}]$. La prévisibilité signifie que $\delta_k$ ne dépend que de
+l'information disponible à $t_k$ : prix courant, temps restant, moneyness et
+position précédente dans notre implémentation.
+
+Sans coût de transaction, le gain cumulé est
+\[
+(\delta\cdot S)_T=\sum_{k=0}^{n-1}\delta_k(S_{t_{k+1}}-S_{t_k}).
+\]
+Avec coûts proportionnels de taux $\lambda$, nous utilisons
+\[
+C_T(\delta)=\lambda\sum_{k=0}^{n}S_{t_k}|\delta_k-\delta_{k-1}|,
+\qquad \delta_{-1}=\delta_n=0,
+\]
+ce qui inclut l'ouverture, les rééquilibrages et la liquidation finale.
+
+Le P\&L terminal du vendeur couvert est donc
+\[
+\Pi_T(\delta)=-Z+p_0+(\delta\cdot S)_T-C_T(\delta).
+\]
+
+\subsection{Objectif quadratique}
+
+La prime étant donnée, l'objectif retenu est
+\[
+\min_{\delta\in\mathcal{H}}
+\mathbb{E}_{\mathbb{P}}\left[\ell(\Pi_T(\delta))\right],
+\qquad
+\ell(x)=x^2.
+\]
+Minimiser $\mathbb{E}[\Pi_T^2]$ pénalise symétriquement gains et pertes
+résiduels : l'objectif vise une réplication statistique autour de zéro plutôt
+qu'une préférence unilatérale de type shortfall. Cette convention est cohérente
+avec une analyse d'erreur de couverture, mais elle ne remplace pas une mesure
+de risque prudentielle pour un desk réel.
+
+\section{Méthodologie Deep Hedging}
+
+\subsection{Lien avec l'article}
+
+Buehler et al. formulent le Deep Hedging comme l'optimisation de stratégies
+adaptées dans un marché discret, éventuellement avec frictions. Leur P\&L
+terminal prend la forme $-Z+p_0+(\delta\cdot S)_T-C_T(\delta)$. Dans le cas où
+$p_0$ est exogène, ils proposent de minimiser
+\[
+\inf_{\delta\in\mathcal{H}}\mathbb{E}\left[
+\ell\left(-Z+p_0+(\delta\cdot S)_T-C_T(\delta)\right)\right].
+\]
+C'est exactement la formulation retenue, avec $\ell(x)=x^2$ en expérience
+principale.
+
+\subsection{Contrôle stochastique paramétré}
+
+Le problème peut être vu comme un contrôle stochastique discret. A chaque date
+$t_k$, le contrôleur observe un état
+\[
+X_k=\left(S_{t_k}/S_0-1,\ \log(S_{t_k}/K),\ (T-t_k)/T,\ \delta_{k-1}\right),
+\]
+et choisit une action $\delta_k=f_\theta(X_k)$. Les paramètres $\theta$ sont
+ceux d'un réseau de neurones. La stratégie est semi-récurrente car la position
+précédente entre explicitement dans l'état ; pour le LSTM, l'historique des
+features de marché est également résumé par un état caché.
+
+La fonction de coût empirique sur un mini-batch de $M$ trajectoires est
+\[
+\widehat{J}(\theta)=\frac1M\sum_{m=1}^{M}
+\left[-Z^{(m)}+p_0+
+\sum_{k=0}^{n-1}\delta^\theta_k(S^{(m)}_{t_{k+1}}-S^{(m)}_{t_k})
+-C_T(\delta^\theta)^{(m)}\right]^2.
+\]
+Toutes les opérations étant différentiables, PyTorch calcule
+$\nabla_\theta\widehat{J}$ par backpropagation à travers les trajectoires
+simulées et les dates de rebalancement.
+
+\subsection{Architectures}
+
+Trois architectures sont comparées :
+\begin{itemize}
+\item \textbf{MLP simple} : une couche cachée, faible capacité, utile comme
+baseline neuronale.
+\item \textbf{MLP profond} : trois couches, capacité plus élevée pour approximer
+des dépendances non linéaires en spot et temps.
+\item \textbf{LSTM} : réseau récurrent traitant la séquence de features. Dans un
+modèle strictement markovien il n'est pas théoriquement nécessaire, mais il
+teste si une mémoire séquentielle améliore la stabilité.
+\end{itemize}
+
+\section{Implémentation}
+
+Le code est organisé en quatre modules :
+\begin{itemize}
+\item \texttt{simulation.py} : paramètres de marché, simulation GBM,
+payoff, prix et delta Black--Scholes.
+\item \texttt{model.py} : politiques MLP et LSTM, fabrique de modèles.
+\item \texttt{training.py} : P\&L, coûts, fonctions de perte, entraînement,
+évaluation et benchmark delta.
+\item \texttt{utils.py} : tableaux et figures.
+\end{itemize}
+
+Les trajectoires Monte Carlo utilisent l'échantillonnage antithétique :
+chaque choc gaussien $\varepsilon$ est apparié à $-\varepsilon$. Cette méthode
+ne change pas la loi marginale mais réduit la variance des estimations pour un
+coût de calcul inchangé. Les seeds NumPy et PyTorch sont fixées pour assurer la
+reproductibilité.
+
+La prime par défaut est
+\[
+p_0=K e^{-rT}N(-d_2)-S_0N(-d_1),
+\]
+avec $d_1,d_2$ standards de Black--Scholes sous $\mathbb{Q}$. Une prime
+externe peut être imposée en remplaçant ce paramètre.
+
+\section{Résultats numériques}
+
+Les figures et tableaux du notebook sont générés dans \texttt{report/figures}.
+Le tableau principal compare les stratégies selon la moyenne du P\&L, la MSE,
+la RMSE, la variance et un intervalle de confiance normal à 95\% pour la MSE.
+Un exemple de structure attendue est donné ci-dessous ; les valeurs exactes
+dépendent du nombre d'époques choisi lors de l'exécution.
+
+\begin{table}[H]
+\centering
+\caption{Mesures hors-échantillon à reporter après exécution du notebook.}
+\begin{tabular}{lrrrr}
+\toprule
+Stratégie & Moyenne P\&L & MSE & RMSE & Variance\\
+\midrule
+Delta Black--Scholes & -- & -- & -- & --\\
+MLP simple & -- & -- & -- & --\\
+MLP profond & -- & -- & -- & --\\
+LSTM & -- & -- & -- & --\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Dans un marché Black--Scholes sans coûts, le delta hedging est un benchmark
+très fort. Avec rebalancement discret, son erreur n'est pas nulle mais elle
+décroît quand le nombre de dates augmente. Un réseau profond bien entraîné
+doit obtenir une MSE comparable, parfois légèrement meilleure sur la
+distribution simulée car il optimise directement l'objectif discret sous
+$\mathbb{P}$. Le MLP simple peut sous-ajuster, tandis que le LSTM n'apporte pas
+nécessairement de gain en modèle markovien mais peut stabiliser certains cas de
+frictions.
+
+\section{Analyse de robustesse}
+
+La robustesse est étudiée en faisant varier :
+\begin{itemize}
+\item le strike $K$, qui déplace l'option entre out-of-the-money,
+at-the-money et in-the-money ;
+\item la volatilité $\sigma$, qui modifie la convexité effective et la fréquence
+des grands mouvements ;
+\item la maturité $T$, qui change l'horizon d'accumulation de l'erreur ;
+\item le nombre de dates $n$, qui contrôle la granularité de rebalancement.
+\end{itemize}
+
+Les intervalles de confiance sur la MSE sont calculés à partir des carrés de
+P\&L hors-échantillon :
+\[
+\widehat{\mathrm{MSE}}\pm1.96
+\frac{\widehat{\mathrm{sd}}(\Pi_T^2)}{\sqrt{N}}.
+\]
+Cette approximation normale est acceptable pour de grands échantillons, mais
+les queues de distribution de Put peuvent justifier un bootstrap dans une étude
+plus poussée.
+
+\section{Extensions : coûts proportionnels et CVaR}
+
+L'extension principale implémentée est le coût proportionnel
+$C_T(\delta)$. Il rend le problème plus proche de l'article original, qui met
+l'accent sur les frictions de marché. La stratégie optimale ne cherche alors
+plus à répliquer agressivement le delta instantané : elle arbitre réduction de
+risque et turnover.
+
+Le code inclut aussi une fonction de perte CVaR empirique :
+\[
+\mathrm{CVaR}_\alpha(L)=q_\alpha(L)+
+\frac{1}{1-\alpha}\mathbb{E}[(L-q_\alpha(L))^+],
+\qquad L=-\Pi_T.
+\]
+Elle n'est pas l'objectif principal demandé, mais elle permet d'étudier une
+préférence plus asymétrique, orientée vers les pertes extrêmes.
+
+\section{Conclusion}
+
+Le projet montre comment adapter rigoureusement le Deep Hedging à un Put avec
+prime connue et perte quadratique. L'approche transforme un problème de
+couverture discrète en apprentissage supervisé par simulation de P\&L terminal,
+où les actions sont les positions de hedge. Ses avantages sont la flexibilité
+face aux coûts, contraintes et objectifs non classiques, ainsi que
+l'optimisation directe hors-échantillon. Ses limites sont la dépendance à la
+qualité du générateur de scénarios, le risque de surapprentissage à une
+dynamique simulée et l'absence de garantie globale d'optimalité pour les
+réseaux entraînés par gradient.
+
+Dans le cadre Black--Scholes frictionless, le delta hedging reste une référence
+structurellement difficile à battre. L'intérêt du Deep Hedging devient plus net
+lorsque la couverture est discrète, que la perte est non standard ou que des
+frictions comme les coûts proportionnels empêchent la réplication classique.
+
+\end{document}
