@@ -10,7 +10,22 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
-from simulation import MarketConfig, black_scholes_put_delta, make_features, put_payoff, simulate_gbm_paths
+try:  # Allows both ``import training`` and ``import src.training``.
+    from .simulation import (
+        MarketConfig,
+        black_scholes_put_delta,
+        make_features,
+        put_payoff,
+        simulate_gbm_paths,
+    )
+except ImportError:  # pragma: no cover - exercised in notebook-style imports.
+    from simulation import (
+        MarketConfig,
+        black_scholes_put_delta,
+        make_features,
+        put_payoff,
+        simulate_gbm_paths,
+    )
 
 
 @dataclass(frozen=True)

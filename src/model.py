@@ -8,7 +8,10 @@ from typing import Literal
 import torch
 from torch import nn
 
-from simulation import MarketConfig, make_features
+try:  # Allows both ``import model`` from notebooks and ``import src.model``.
+    from .simulation import MarketConfig, make_features
+except ImportError:  # pragma: no cover - exercised in notebook-style imports.
+    from simulation import MarketConfig, make_features
 
 
 ArchitectureName = Literal["mlp_simple", "mlp_deep", "lstm"]
